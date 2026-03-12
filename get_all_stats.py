@@ -1,3 +1,5 @@
+import io
+
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
@@ -355,7 +357,7 @@ def getAllScheduledGames(schedule_id):
         header_group = None
         print("No matching div found for group header")
 
-    df_games = pd.read_html(response.text, extract_links="all", displayed_only=False)[2]
+    df_games = pd.read_html(io.StringIO(response.text), extract_links="all", displayed_only=False)[2]
 
     # Flatten MultiIndex - handle nested tuples
     flattened_cols = []
