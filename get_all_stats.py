@@ -2,20 +2,73 @@ import io
 
 import pandas as pd
 import requests
+import requests_cache
+
 from bs4 import BeautifulSoup
 import re
 import csv
 import sys
+import json
+import os
 
-DEBUG = 1
+DEBUG = 0
 
 # Initialize an empty stats dictionary
 player_stats = {}
 
 # Team name mapping: any variation -> canonical name
 team_name_mapping = {}
+player_name_mapping = {}
+
+requests_cache.install_cache('swehockey_cache')
+
+
+def load_mappings_from_config():
+    """
+    Load team name mapping from local config file.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    config_paths = [
+        os.path.join(script_dir, "config.json"),
+    ]
+
+    for config_path in config_paths:
+        print(f"Checking for mapping config at: {config_path}")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                    if "team_name_mapping" in config:
+                        team_name_mapping.update(config["team_name_mapping"])
+                        if DEBUG == 1:
+                            print(f"Loaded team mapping from {config_path}")
+                    if "player_name_mapping" in config:
+                        player_name_mapping.update(config["player_name_mapping"])
+                        if DEBUG == 1:
+                            print(f"Loaded player mapping from {config_path}")
+            except Exception as e:
+                print(f"Warning: Failed to load config from {config_path}: {e}")
+
+            return  # Stop after loading the first found config
+
+    print("No mapping config found. Using empty mappings.")
+
+
+# Load config on module import
+load_mappings_from_config()
+
 # Canonical team names (base name without suffixes)
 canonical_teams = {}
+
+
+def normalize_player_name(player_name):
+    """
+    Normalize player name using the player_name_mapping.
+    If no mapping exists, return the original name.
+    """
+    return player_name_mapping.get(player_name, player_name)
+
 
 def get_canonical_team_name(team_name):
     """
@@ -46,6 +99,7 @@ def get_canonical_team_name(team_name):
     DEBUG == 1 and print(f"Canonical team name: '{team_name}' -> '{canonical}'")
 
     return canonical
+
 
 def normalize_team_name(short_name, full_names):
     """
@@ -111,6 +165,7 @@ def normalize_team_name(short_name, full_names):
     print(f"WARNING: Could not map team '{short_name}', using canonical: '{canonical}'")
     return canonical
 
+
 def getLineUps(matchid, matchdate, gametext, series):
     home_team, away_team = map(str.strip, gametext.split(" - "))
     parsed_home_team = re.sub(r"\s*\(.*?\)|\s+", " ", home_team).strip()
@@ -145,21 +200,24 @@ def getLineUps(matchid, matchdate, gametext, series):
             # Extract and clean up player text
             raw_player_text = player.text.strip().replace('\n', ' ')
 
-            # Parse the player number, first name, and last name
-            try:
-                # Split the player text into number and name parts
-                number, name = raw_player_text.split('.', 1)
-                lastname, firstname = [n.strip() for n in name.split(',', 1)]
-                formatted_name = f"{number.strip()},{firstname} {lastname}"
-            except ValueError:
-                formatted_name = f"Invalid format for player: {raw_player_text}"
+            # The "Extra players" entries contain position info in parentheses
+            # so we use the same pattern logic as the penalty and goal parsings to parse the expected names.
+            pattern = r"(\d{1,2})\.\s+([^,\(0-9]+),\s+([^,\(0-9]+)"
+
+            match = re.match(pattern, raw_player_text)
+
+            if match:
+                number = match.group(1)  # Player number, e.g., "18"
+                lastname = match.group(2).strip()  # Surname, e.g., "Andersson"
+                firstname = match.group(3).strip()  # Firstname, e.g., "Henry"
+
             # Parse to remove the part in parentheses and extra spaces
             team_name = re.sub(r"\s*\(.*?\)|\s+", " ", team_name).strip()
 
             # Normalize team name to canonical form
             canonical_team_name = get_canonical_team_name(team_name)
 
-            player_name = f"{firstname} {lastname}"
+            player_name = normalize_player_name(f"{firstname} {lastname}")
             ensure_player(player_stats, canonical_team_name, f"{player_name}", number)
             DEBUG == 1 and print(f"Game played Team: {canonical_team_name} (from {team_name}) Player: {player_name}")
             player_stats[canonical_team_name][player_name]["games_played"] += 1
@@ -167,7 +225,8 @@ def getLineUps(matchid, matchdate, gametext, series):
     else:
         print(f"Failed to fetch the webpage. Status code: {response.status_code}")
         return (None, None)
-   
+
+
 def ensure_player(stats, team, player_name, number):
     if team not in stats:
         stats[team] = {}
@@ -181,7 +240,8 @@ def ensure_player(stats, team, player_name, number):
             "games_played": 0,
             "events": []
         }
-        
+
+
 def add_player_goal(stats, team, player_name, number, matchdate, series, home, away, game_id):
     ensure_player(stats, team, player_name, number)
 
@@ -198,7 +258,8 @@ def add_player_goal(stats, team, player_name, number, matchdate, series, home, a
     })
 
     return stats
-    
+
+
 def add_player_assist(stats, team, player_name, number, matchdate, series, home, away, game_id):
     ensure_player(stats, team, player_name, number)
 
@@ -216,6 +277,7 @@ def add_player_assist(stats, team, player_name, number, matchdate, series, home,
 
     return stats
 
+
 def add_player_pim(stats, team, player_name, number, pim, matchdate, series, home, away, game_id):
     ensure_player(stats, team, player_name, number)
 
@@ -231,6 +293,7 @@ def add_player_pim(stats, team, player_name, number, pim, matchdate, series, hom
     })
 
     return stats
+
 
 def getGameStats(game_id, serie, matchdate, gametext):
     home_goals = 0
@@ -279,21 +342,20 @@ def getGameStats(game_id, serie, matchdate, gametext):
                 away_goals = new_away
                 scoring_team = canonical_away_team
 
-            players = parse_goal(players_str, matchdate, serie, scoring_team, canonical_home_team, canonical_away_team, game_id)
+            _ = parse_goal(players_str, matchdate, serie, scoring_team, canonical_home_team, canonical_away_team, game_id)
         elif not pd.isna(event) and re.match(r"(\d+ min)", event):
             match = re.match(r"(\d+) min", event)
             pim = int(match.group(1))
             if pim == 1:
                 pim = 2
             DEBUG == 1 and print(f"Penalty found for {matchdate} {event} {team} {time}: {players_str} {match.group(1)}")
-            playes = parse_penalty(players_str, matchdate, serie, team, pim, canonical_home_team, canonical_away_team, game_id)
+            _ = parse_penalty(players_str, matchdate, serie, team, pim, canonical_home_team, canonical_away_team, game_id)
 
 
 def parse_penalty(player_string, matchdate, serie, team, time, home_team, away_team, game_id):
-    # Updated regex to handle special characters including Scandinavian ones like 'ø', 'å', etc.
-    # Updated regex to handle accented characters like 'é', 'è', 'ø', etc., and hyphenated last names
-    pattern = r"(\d+)\.\s+([A-Za-zÅÄÖåäöÉéèÁáÀàÁáøØüæ'`-]+(?:\s+[A-Za-zÅÄÖåäöÉéèÁáÀàÁáøØüæ'`-]+)*),\s+([A-Za-zÅÄÖåäöÉéèÁáÀàÁáøØü'`-]+)"
-    #pattern = r"(\d+)\.\s+([A-Za-zÅÄÖåäöÉéÁáÀàÁáøØ-]+(?:\s+[A-Za-zÅÄÖåäöÉéÁáÀàÁáøØ-]+)*),\s+([A-Za-zÅÄÖåäöÉéÁáÀàÁáøØ]+)"
+    # An entry consists of Player Number. Surname, Firstname, such as "18. Andersson, Henry" or "18. Bëngt-Bolinder Bennyssön, Benny"
+    # or maybe even weirder... so we parse everything that's not a comma or parentheses as part of the name
+    pattern = r"(\d+)\.\s+([^,\(0-9]+),\s+([^,\(0-9]+)"
     match = re.match(pattern, player_string)
 
     DEBUG == 1 and print(f"Parsing '{player_string}'")
@@ -303,20 +365,20 @@ def parse_penalty(player_string, matchdate, serie, team, time, home_team, away_t
         return
 
     number = match.group(1)  # Player number, e.g., "18"
-    surname = match.group(2)  # Surname, e.g., "Andersson"
-    firstname = match.group(3)  # Firstname, e.g., "Henry"
+    surname = match.group(2).strip()  # Surname, e.g., "Andersson"
+    firstname = match.group(3).strip()  # Firstname, e.g., "Henry"
 
     # Normalize team name to match lineup teams
     normalized_team = normalize_team_name(team, list(player_stats.keys()))
 
-    add_player_pim(player_stats, normalized_team, f"{firstname} {surname}", number, time, matchdate, serie, home_team, away_team, game_id)
+    add_player_pim(player_stats, normalized_team, normalize_player_name(f"{firstname} {surname}"), number, time, matchdate, serie, home_team, away_team, game_id)
     DEBUG == 1 and print(f"Penalty added for Player: Number='{number}', Name='{firstname} {surname}' Team: {normalized_team}")
 
 
 # Function to process the players_event string
 def parse_goal(input_string, matchdate, serie, team, home_team, away_team, game_id):
     # parse_goal expression to match both goal scorer and assist (ensuring no digits in names)
-    pattern = r"(\d{1,2})\.\s+([A-Za-zåäöÅÄÖ-]+),\s+([A-Za-zåäöÅÄÖ-]+)"
+    pattern = r"(\d{1,2})\.\s+([^,\(0-9]+),\s+([^,\(0-9]+)"
 
     # Find all matches
     matches = re.findall(pattern, input_string)
@@ -327,17 +389,22 @@ def parse_goal(input_string, matchdate, serie, team, home_team, away_team, game_
 
         # Goal scorer (first match)
         goal_number, goal_surname, goal_firstname = matches[0]
-        add_player_goal(player_stats, normalized_team, f"{goal_firstname} {goal_surname}", goal_number, matchdate, serie, home_team, away_team, game_id)
+        goal_surname = goal_surname.strip()
+        goal_firstname = goal_firstname.strip()
+        add_player_goal(player_stats, normalized_team, normalize_player_name(f"{goal_firstname} {goal_surname}"), goal_number, matchdate, serie, home_team, away_team, game_id)
         DEBUG == 1 and print(f"Date: {matchdate}  Team: {normalized_team} Serie: {serie} Goal Scorer: #{goal_number} '{goal_firstname} {goal_surname}'")
 
         # Assists (remaining matches)
         for assist in matches[1:]:
             assist_number, assist_surname, assist_firstname = assist
-            add_player_assist(player_stats, normalized_team, f"{assist_firstname} {assist_surname}", assist_number, matchdate, serie, home_team, away_team, game_id)
+            assist_surname = assist_surname.strip()
+            assist_firstname = assist_firstname.strip()
+            add_player_assist(player_stats, normalized_team, normalize_player_name(f"{assist_firstname} {assist_surname}"), assist_number, matchdate, serie, home_team, away_team, game_id)
             DEBUG == 1 and print(f"Date: {matchdate} Team: {normalized_team} Serie: {serie} Assist: #{assist_number} '{assist_firstname} {assist_surname}'")
     else:
         print(f"ERROR: Could not parse {input_string}")
-      
+
+
 def getAllScheduledGames(schedule_id):
     """
     Get all games from a schedule ID and process lineups and game statistics
@@ -486,7 +553,6 @@ def getAllScheduledGames(schedule_id):
             print(f"Could not extract match ID from: {result_href}")
 
 
-
 def write_player_stats_csv(stats, filename="player_stats.csv"):
     """
     Write player statistics to CSV file
@@ -511,6 +577,7 @@ def write_player_stats_csv(stats, filename="player_stats.csv"):
                 ])
 
     print(f"Player statistics written to {filename}")
+
 
 def write_events_csv(stats, filename="player_events.csv"):
     """
@@ -565,6 +632,7 @@ def write_events_csv(stats, filename="player_events.csv"):
 
     print(f"Player events written to {filename}")
 
+
 def print_stats(stats):
     print("\n=== PLAYER STATISTICS ===\n")
 
@@ -581,6 +649,7 @@ def print_stats(stats):
             print()
 
         print()
+
 
 def print_all_stats(stats):
     print("\n==============================")
@@ -625,6 +694,7 @@ def print_all_stats(stats):
 
         print("\n")
 
+
 if __name__ == "__main__":
     # Check if schedule IDs are provided as command-line arguments
     if len(sys.argv) > 1:
@@ -649,4 +719,3 @@ if __name__ == "__main__":
     # Write CSV files
     write_player_stats_csv(player_stats, "player_stats.csv")
     write_events_csv(player_stats, "player_events.csv")
-
