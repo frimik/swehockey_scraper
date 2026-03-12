@@ -55,11 +55,33 @@ The script will:
 ### Finding Schedule IDs
 
 Schedule IDs can be found in the URL when viewing a schedule on stats.swehockey.se:
-```
+
+```text
 https://stats.swehockey.se/ScheduleAndResults/Schedule/19563
                                                           ^^^^^
                                                      Schedule ID
 ```
+
+### Configuration
+
+Sample `config.json`:
+
+```json
+{
+    "team_name_mapping": {
+        "AIS": "Almtuna IS",
+        "AIS1": "Almtuna IS",
+        "AIS2": "Almtuna IS",
+        "Almtuna IS Stockholm slutspelet U14P Kvartsfinal E3": "Almtuna IS",
+        "Almtuna IS Stockholm slutspelet U14P Semifinal E": "Almtuna IS",
+        "Almtuna IS Stockholm slutspelet U14P Final E": "Almtuna IS",
+        "Almtuna IS Stockholm slutspelet U13P Semifinal B": "Almtuna IS",
+        "Almtuna IS Stockholm slutspelet U15P Kvartsfinal B": "Almtuna IS"
+    },
+    "player_name_mapping": {
+        "John Dough": "John Doe"
+    }
+}```
 
 ## Output Files
 
